@@ -634,10 +634,11 @@ esp_err_t aes67_rtp_engine_init(const aes67_net_config_t *net_config,
 
     /* Stream buffer: sized for practical worst-case, not theoretical max.
      * AES67 mandates max 8 channels, max 4ms packet time at 48kHz = 192 frames.
-     * 192 * 8ch * 4 bytes = 6144 per packet. Buffer 8 packets = 49152. */
-    uint32_t practical_max_pkt = 192 * CONFIG_AES67_MAX_CHANNELS_PER_STREAM * sizeof(int32_t);
-    uint32_t sbuf_size = practical_max_pkt * 8;
-    engine->audio_stream_buf = xStreamBufferCreate(sbuf_size, practical_max_pkt);
+     * 192 * 8ch * 4 bytes = 6144 per packet. Buffer 8 packets = 49152.
+     * Created on first aes67_rtp_engine_get_stream_buf(): applications that
+     * take audio from the stream rings directly never ask for it, and it would
+     * cost 48 KB of internal RAM plus a copy of every received packet. */
+    engine->audio_stream_buf = NULL;
 
     /* Raw lwIP UDP PCB disabled when Ethernet hook is active.
      * The hook intercepts RTP at L2 before lwIP, so the raw PCB would
@@ -664,9 +665,6 @@ esp_err_t aes67_rtp_engine_init(const aes67_net_config_t *net_config,
     engine->raw_sample_buf = NULL;
     ESP_LOGI(TAG, "Raw UDP PCB disabled (Ethernet hook handles RTP)");
 #endif
-    if (!engine->audio_stream_buf) {
-        ESP_LOGE(TAG, "Failed to create audio stream buffer");
-    }
 
     /* Create the RX socket only if raw PCB is not active.
      * Raw PCB already binds to the port, so socket bind would fail. */
@@ -698,7 +696,17 @@ esp_err_t aes67_rtp_engine_init(const aes67_net_config_t *net_config,
 
 StreamBufferHandle_t aes67_rtp_engine_get_stream_buf(aes67_rtp_engine_handle_t handle)
 {
-    return handle ? handle->audio_stream_buf : NULL;
+    if (!handle) {
+        return NULL;
+    }
+    if (!handle->audio_stream_buf) {
+        const uint32_t practical_max_pkt = 192 * CONFIG_AES67_MAX_CHANNELS_PER_STREAM * sizeof(int32_t);
+        handle->audio_stream_buf = xStreamBufferCreate(practical_max_pkt * 8, practical_max_pkt);
+        if (!handle->audio_stream_buf) {
+            ESP_LOGE(TAG, "Failed to create audio stream buffer");
+        }
+    }
+    return handle->audio_stream_buf;
 }
 
 void aes67_rtp_engine_set_notify_task(aes67_rtp_engine_handle_t handle,
