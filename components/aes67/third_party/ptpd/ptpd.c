@@ -340,6 +340,86 @@ static int ptp_net_send(FAR struct ptp_state_s *state, void *ptp_msg, uint16_t p
   return ret;
 }
 
+/* Send a PTP event message as UDP (IPv4 multicast 224.0.1.129, port 319)
+ * straight through the Ethernet driver, with the EMAC's transmit timestamp.
+ * AES67 and Dante peers use PTP over UDP. Sending the L2 frame for the
+ * timestamp and a separate copy through lwIP gave the peers a message that
+ * left tens of microseconds after the time we put in Follow_Up or used as
+ * Delay_Req t3, varying with load. Returns <0 if it can't (no IPv4 address
+ * yet, driver error); the caller then falls back to the socket. */
+static int ptp_udp_send_hwts(FAR struct ptp_state_s *state, const void *ptp_msg,
+                             uint16_t ptp_msg_len, struct timespec *ts)
+{
+  esp_netif_ip_info_t ip;
+  esp_netif_t *netif = esp_netif_get_handle_from_ifkey("ETH_0");
+  if (!netif || esp_netif_get_ip_info(netif, &ip) != ESP_OK || ip.ip.addr == 0 ||
+      !state->cached_eth_handle)
+    {
+      return -1;
+    }
+
+  static uint16_t ip_id;
+  const uint16_t udp_len = 8 + ptp_msg_len, ip_len = 20 + udp_len;
+  uint8_t f[ETH_HEADER_LEN + 20 + 8 + sizeof(state->rxbuf)];
+  if (ptp_msg_len > sizeof(state->rxbuf))
+    {
+      return -1;
+    }
+
+  /* Ethernet: 224.0.1.129 -> 01:00:5e:00:01:81 */
+  const uint8_t dst[6] = { 0x01, 0x00, 0x5e, 0x00, 0x01, 0x81 };
+  memcpy(f, dst, 6);
+  memcpy(f + 6, state->intf_hw_addr, 6);
+  f[12] = 0x08;
+  f[13] = 0x00;
+
+  /* IPv4, DSCP EF (46) as AES67 recommends for PTP events, TTL 1 */
+  uint8_t *h = f + ETH_HEADER_LEN;
+  const uint32_t src = ip.ip.addr;                      /* network order */
+  const uint32_t mc = htonl(PTP_MULTICAST_ADDR);
+  ip_id++;
+  h[0] = 0x45; h[1] = 46 << 2;
+  h[2] = ip_len >> 8; h[3] = ip_len & 0xff;
+  h[4] = ip_id >> 8; h[5] = ip_id & 0xff;
+  h[6] = 0; h[7] = 0;
+  h[8] = 1; h[9] = 17;
+  h[10] = 0; h[11] = 0;
+  memcpy(h + 12, &src, 4);
+  memcpy(h + 16, &mc, 4);
+  uint32_t sum = 0;
+  for (int i = 0; i < 20; i += 2)
+    {
+      sum += (uint32_t)(h[i] << 8 | h[i + 1]);
+    }
+  while (sum >> 16)
+    {
+      sum = (sum & 0xffff) + (sum >> 16);
+    }
+  sum = ~sum & 0xffff;
+  h[10] = sum >> 8; h[11] = sum & 0xff;
+
+  /* UDP 319 -> 319, no checksum (allowed for IPv4) */
+  uint8_t *u = h + 20;
+  u[0] = PTP_UDP_PORT_EVENT >> 8; u[1] = PTP_UDP_PORT_EVENT & 0xff;
+  u[2] = PTP_UDP_PORT_EVENT >> 8; u[3] = PTP_UDP_PORT_EVENT & 0xff;
+  u[4] = udp_len >> 8; u[5] = udp_len & 0xff;
+  u[6] = 0; u[7] = 0;
+  memcpy(u + 8, ptp_msg, ptp_msg_len);
+
+  eth_mac_time_t t;
+  if (esp_eth_transmit_ctrl_vargs(state->cached_eth_handle, &t, 2, f,
+                                  (uint32_t)(ETH_HEADER_LEN + ip_len)) != ESP_OK)
+    {
+      return -1;
+    }
+  if (ts)
+    {
+      ts->tv_sec = t.seconds;
+      ts->tv_nsec = t.nanoseconds;
+    }
+  return ptp_msg_len;
+}
+
 static int ptp_net_recv(FAR struct ptp_state_s *state, void *ptp_msg, uint16_t ptp_msg_len, struct timespec *ts)
 {
   uint8_t eth_frame[ptp_msg_len + ETH_HEADER_LEN];
@@ -1141,17 +1221,22 @@ static int ptp_send_sync(FAR struct ptp_state_s *state)
   timespec_to_ptp_format(&ts, msg.origintimestamp);
 
 #ifdef ESP_PTP
-  ret = ptp_net_send(state, &msg, sizeof(msg), &ts);
-
-  /* Also send sync via UDP for AES67 interoperability */
-  {
-    struct sockaddr_in udp_addr;
-    udp_addr.sin_family      = AF_INET;
-    udp_addr.sin_addr.s_addr = htonl(PTP_MULTICAST_ADDR);
-    udp_addr.sin_port        = htons(PTP_UDP_PORT_EVENT);
-    sendto(state->tx_socket, &msg, sizeof(msg), 0,
-           (struct sockaddr *)&udp_addr, sizeof(udp_addr));
-  }
+  /* UDP first (AES67/Dante peers), stamped by the EMAC: its timestamp goes
+   * into Follow_Up. The L2 copy (0x88F7) follows for layer-2 peers. */
+  if (ptp_udp_send_hwts(state, &msg, sizeof(msg), &ts) >= 0)
+    {
+      ret = ptp_net_send(state, &msg, sizeof(msg), NULL);
+    }
+  else
+    {
+      ret = ptp_net_send(state, &msg, sizeof(msg), &ts);
+      struct sockaddr_in udp_addr;
+      udp_addr.sin_family      = AF_INET;
+      udp_addr.sin_addr.s_addr = htonl(PTP_MULTICAST_ADDR);
+      udp_addr.sin_port        = htons(PTP_UDP_PORT_EVENT);
+      sendto(state->tx_socket, &msg, sizeof(msg), 0,
+             (struct sockaddr *)&udp_addr, sizeof(udp_addr));
+    }
 #else
   ret = sendmsg(state->tx_socket, &txhdr, 0);
 #endif // ESP_PTP
@@ -1233,17 +1318,22 @@ static int ptp_send_delay_req(FAR struct ptp_state_s *state)
   timespec_to_ptp_format(&state->delayreq_time, req.origintimestamp);
 
 #ifdef ESP_PTP
-  ret = ptp_net_send(state, &req, sizeof(req), &state->delayreq_time);
-
-  /* Also send delay_req via UDP */
-  {
-    struct sockaddr_in udp_addr;
-    udp_addr.sin_family      = AF_INET;
-    udp_addr.sin_addr.s_addr = htonl(PTP_MULTICAST_ADDR);
-    udp_addr.sin_port        = htons(PTP_UDP_PORT_EVENT);
-    sendto(state->tx_socket, &req, sizeof(req), 0,
-           (struct sockaddr *)&udp_addr, sizeof(udp_addr));
-  }
+  /* UDP via the driver, stamped by the EMAC: that is the message a UDP
+   * master answers, so its timestamp is t3. L2 copy for layer-2 masters. */
+  if (ptp_udp_send_hwts(state, &req, sizeof(req), &state->delayreq_time) >= 0)
+    {
+      ret = ptp_net_send(state, &req, sizeof(req), NULL);
+    }
+  else
+    {
+      ret = ptp_net_send(state, &req, sizeof(req), &state->delayreq_time);
+      struct sockaddr_in udp_addr;
+      udp_addr.sin_family      = AF_INET;
+      udp_addr.sin_addr.s_addr = htonl(PTP_MULTICAST_ADDR);
+      udp_addr.sin_port        = htons(PTP_UDP_PORT_EVENT);
+      sendto(state->tx_socket, &req, sizeof(req), 0,
+             (struct sockaddr *)&udp_addr, sizeof(udp_addr));
+    }
 #else
   ret = sendto(state->tx_socket, &req, sizeof(req), 0,
                (FAR struct sockaddr *)&addr, sizeof(addr));
