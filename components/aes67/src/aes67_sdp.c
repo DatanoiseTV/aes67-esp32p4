@@ -118,7 +118,9 @@ int aes67_sdp_generate(const aes67_sdp_t *sdp, char *buf, size_t buf_len)
         framecount,
         sdp->payload_type, codec_str, sdp->sample_rate, sdp->channels,
         ptime_str,
-        sdp->is_source ? "sendonly" : "recvonly");
+        /* Sources are announced with "recvonly", as Dante and Merging do in
+         * their SAP announcements (the receiver's side of the session). */
+        "recvonly");
 
     if (written < 0 || (size_t)written >= buf_len) {
         ESP_LOGE(TAG, "SDP buffer overflow during generate");

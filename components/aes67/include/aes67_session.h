@@ -80,6 +80,16 @@ esp_err_t aes67_session_add_source(aes67_session_handle_t handle,
                                    uint8_t *id);
 
 /**
+ * @brief Re-announce local sources whose PTP reference clock changed.
+ *
+ * The SDP of a source names the grandmaster it is timed against. Call this
+ * periodically (e.g. once a second): when the grandmaster changes, or
+ * becomes known after start-up, the sources are re-announced with the new
+ * identity and a new session version.
+ */
+esp_err_t aes67_session_refresh_refclk(aes67_session_handle_t handle);
+
+/**
  * Remove a source stream by ID.
  */
 esp_err_t aes67_session_remove_source(aes67_session_handle_t handle, uint8_t id);

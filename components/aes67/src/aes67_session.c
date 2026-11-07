@@ -116,6 +116,69 @@ esp_err_t aes67_session_init(aes67_rtp_engine_handle_t rtp,
     return ESP_OK;
 }
 
+/* Reference clock for a source's SDP: the grandmaster's identity as soon as
+ * one is known (we follow it, or we are it), "traceable" only before that.
+ * Receivers such as Dante Controller match it against their own PTP leader. */
+static void set_refclk(struct aes67_session_mgr *mgr, aes67_sdp_t *sdp)
+{
+    aes67_ptp_status_t st;
+    sdp->ptp_traceable = true;
+    if (mgr->ptp && aes67_ptp_get_status(mgr->ptp, &st) == ESP_OK &&
+        st.lock_state != AES67_PTP_UNLOCKED) {
+        for (int i = 0; i < 8; i++) {
+            if (st.grandmaster_id[i]) {
+                memcpy(sdp->ptp_grandmaster_id, st.grandmaster_id, 8);
+                sdp->ptp_traceable = false;
+                break;
+            }
+        }
+    }
+}
+
+esp_err_t aes67_session_refresh_refclk(aes67_session_handle_t handle)
+{
+    struct aes67_session_mgr *mgr = handle;
+    if (!mgr) return ESP_ERR_INVALID_ARG;
+    /* static, under mgr->lock: callers (e.g. a small clock task) need not
+     * have room for two SDP texts on their stack */
+    static aes67_sdp_t sdp;
+    static char text[AES67_SDP_MAX_LEN], old[AES67_SDP_MAX_LEN];
+    xSemaphoreTake(mgr->lock, portMAX_DELAY);
+    for (int i = 0; i < CONFIG_AES67_MAX_SOURCES; i++) {
+        aes67_source_t *src = &mgr->sources[i];
+        if (!src->enabled) continue;
+        sdp = src->sdp;
+        set_refclk(mgr, &sdp);
+        if (sdp.ptp_traceable == src->sdp.ptp_traceable &&
+            !memcmp(sdp.ptp_grandmaster_id, src->sdp.ptp_grandmaster_id, 8)) {
+            continue;                                   /* unchanged */
+        }
+        sdp.session_version++;
+        int len = aes67_sdp_generate(&sdp, text, sizeof(text));
+        if (len < 0) continue;
+        uint32_t local_ip = 0;
+        aes67_net_get_local_ip(&local_ip);
+        if (mgr->config.sap_enabled && mgr->sap) {
+            /* RFC 2974: a changed announcement is a new message (new hash) */
+            if (aes67_sdp_generate(&src->sdp, old, sizeof(old)) > 0) {
+                aes67_sap_delete(mgr->sap, src->sap_msg_id, local_ip, old);
+            }
+            uint16_t crc = 0xFFFF;
+            for (int k = 0; k < len; k++) {
+                crc ^= (uint8_t)text[k];
+                for (int b = 0; b < 8; b++) crc = (crc & 1) ? (crc >> 1) ^ 0xA001 : crc >> 1;
+            }
+            src->sap_msg_id = crc;
+            aes67_sap_announce(mgr->sap, crc, local_ip, text);
+        }
+        src->sdp = sdp;
+        ESP_LOGI(TAG, "source '%s': reference clock now %s", src->name,
+                 sdp.ptp_traceable ? "traceable" : "the grandmaster");
+    }
+    xSemaphoreGive(mgr->lock);
+    return ESP_OK;
+}
+
 esp_err_t aes67_session_add_source(aes67_session_handle_t handle,
                                    const char *name,
                                    uint8_t channels,
@@ -223,19 +286,9 @@ esp_err_t aes67_session_add_source(aes67_session_handle_t handle,
     sdp.ptp_traceable = true;
     sdp.ptp_domain = mgr->config.ptp.domain;
 
-    aes67_ptp_status_t ptp_status;
-    if (aes67_ptp_get_status(mgr->ptp, &ptp_status) == ESP_OK &&
-        ptp_status.lock_state == AES67_PTP_LOCKED) {
-        /* If we have a locked GM, include its identity */
-        bool gm_valid = false;
-        for (int i = 0; i < 8; i++) {
-            if (ptp_status.grandmaster_id[i] != 0) { gm_valid = true; break; }
-        }
-        if (gm_valid) {
-            memcpy(sdp.ptp_grandmaster_id, ptp_status.grandmaster_id, 8);
-            sdp.ptp_traceable = true;
-        }
-    }
+    /* the GM we follow (or are), if known: aes67_session_refresh_refclk()
+     * keeps it current afterwards */
+    set_refclk(mgr, &sdp);
 
     /* Media clock offset */
     sdp.has_mediaclk = true;
