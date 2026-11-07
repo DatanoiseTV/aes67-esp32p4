@@ -37,8 +37,6 @@ idf_component_register(
         esp_psram
         esp_mm
         esp_http_server
-    EMBED_FILES
-        "web/index.html.gz"
 )
 
 # ptpd.c is a third-party port with intentionally-unused helpers behind
@@ -48,10 +46,19 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "-Wno-unused-function"
 )
 
-# Gzip the web frontend for embedding in flash
+# Gzip the web frontend at build time, into the build directory, and embed it.
+# Python's gzip with mtime=0 makes the output reproducible (no timestamp or
+# file name in the header), so nothing generated lands in the source tree.
+idf_build_get_property(python PYTHON)
+set(AES67_WEB_GZ ${CMAKE_CURRENT_BINARY_DIR}/index.html.gz)
 add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/web/index.html.gz
-    COMMAND gzip -9 -k -f ${CMAKE_CURRENT_SOURCE_DIR}/web/index.html
+    OUTPUT ${AES67_WEB_GZ}
+    COMMAND ${python} -c "import gzip,sys; open(sys.argv[2],'wb').write(gzip.compress(open(sys.argv[1],'rb').read(),9,mtime=0))"
+            ${CMAKE_CURRENT_SOURCE_DIR}/web/index.html ${AES67_WEB_GZ}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/index.html
     COMMENT "Compressing web/index.html -> index.html.gz"
+    VERBATIM
 )
+add_custom_target(aes67_web_gz DEPENDS ${AES67_WEB_GZ})
+# symbol names follow the file name: _binary_index_html_gz_start/_end
+target_add_binary_data(${COMPONENT_LIB} ${AES67_WEB_GZ} BINARY DEPENDS aes67_web_gz)
