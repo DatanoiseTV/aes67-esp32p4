@@ -124,6 +124,16 @@ esp_err_t aes67_rtp_stream_remove(aes67_rtp_engine_handle_t engine,
 /**
  * Get stream status.
  */
+/**
+ * @brief Take the RTP timestamp of the next aes67_rtp_engine_process_tx() call.
+ *
+ * A source takes its RTP timestamp from the first process_tx() call and
+ * counts on from there. When the application's media clock is re-aligned to
+ * PTP (after locking, or a PTP step), call this so the next packet starts
+ * from the timestamp passed with it.
+ */
+esp_err_t aes67_rtp_stream_resync_timestamp(aes67_rtp_stream_handle_t stream);
+
 esp_err_t aes67_rtp_stream_get_status(aes67_rtp_stream_handle_t stream,
                                       aes67_rtp_stream_status_t *status);
 
