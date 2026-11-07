@@ -1402,6 +1402,36 @@ static void ptp_lock_local_clock_freq(FAR struct ptp_state_s *state,
   }
   state->last_offset_ns = offset_ns;
 
+  /* Lucky-packet filter. Behind a switch that is not PTP-aware, a Sync can
+   * wait in the egress queue behind other traffic (on a 100 Mbit/s port one
+   * 1200-byte audio packet is ~100 us), which makes t2 late and the offset
+   * jump. Queuing only ever delays, so of PTPD_WINDOW consecutive Syncs the
+   * one with the largest (remote - local) offset is the least delayed. The
+   * servo runs once per window on that sample; our clock is not adjusted in
+   * between, so the samples are comparable. */
+#ifndef CONFIG_NETUTILS_PTPD_SYNC_WINDOW
+#define CONFIG_NETUTILS_PTPD_SYNC_WINDOW 4
+#endif
+  {
+    static int win_n;
+    static int64_t win_best;
+    static struct timespec win_remote, win_local;
+    if (win_n == 0 || offset_ns > win_best)
+      {
+        win_best = offset_ns;
+        win_remote = *remote_timestamp;
+        win_local = *local_timestamp;
+      }
+    if (++win_n < CONFIG_NETUTILS_PTPD_SYNC_WINDOW && llabs(offset_ns) < 1000000)
+      {
+        return;                    /* collect (large offsets: act at once) */
+      }
+    win_n = 0;
+    offset_ns = win_best;
+    remote_timestamp = &win_remote;      /* the caller's buffers stay as they are */
+    local_timestamp = &win_local;
+  }
+
   /* Convert offset from nanoseconds to ppb using the actual sync interval.
    * ppb = offset_ns * 1e9 / interval_ns */
   int64_t local_time_ns_now = timespec_to_ns(local_timestamp);
