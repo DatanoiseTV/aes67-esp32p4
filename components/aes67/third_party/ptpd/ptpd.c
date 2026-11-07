@@ -1902,6 +1902,25 @@ static int ptp_process_delay_resp(FAR struct ptp_state_s *state,
   return OK;
 }
 
+#ifdef ESP_PTP
+/* Hardware receive timestamp for a PTP event message that arrived over UDP.
+ * The UDP sockets carry no timestamp, and stamping at recv() time adds the
+ * network stack's and the scheduler's latency (hundreds of microseconds
+ * under load), so a client of a PTP-over-UDP master (AES67, Dante) never
+ * locks. An application that sees the EMAC's per-frame timestamp (e.g. in
+ * an Ethernet input hook) overrides this and returns the timestamp of the
+ * frame that carried msg (match on message type, sequence id and source
+ * port identity). Without it: software timestamps, as before. */
+__attribute__((weak)) bool aes67_ptp_rx_hw_timestamp(const void *msg, size_t len,
+                                                      struct timespec *ts)
+{
+  (void)msg;
+  (void)len;
+  (void)ts;
+  return false;
+}
+#endif
+
 /* Determine received packet type and process it */
 
 static int ptp_process_rx_packet(FAR struct ptp_state_s *state,
@@ -2191,7 +2210,10 @@ static int ptp_daemon(int argc, FAR char** argv)
                     MSG_DONTWAIT);
           if (ret > 0)
             {
-              ptp_gettime(state, &state->rxtime);
+              if (!aes67_ptp_rx_hw_timestamp(&state->rxbuf, ret, &state->rxtime))
+                {
+                  ptp_gettime(state, &state->rxtime);
+                }
               ptp_process_rx_packet(state, ret);
             }
         }
