@@ -235,10 +235,15 @@ static esp_err_t stream_alloc_buffers(struct aes67_rtp_stream *stream,
     /* Add 1 byte for ring buffer full/empty distinction */
     buf_size += 1;
 
-    /* Always use internal SRAM for jitter buffer -- PSRAM reads add
-     * latency that causes the 10% throughput loss in i2s_channel_write path */
-    uint32_t caps = MALLOC_CAP_INTERNAL;
+    /* Internal SRAM by default: PSRAM reads cost throughput in the
+     * component's own i2s_channel_write path. An application that moves
+     * audio in blocks (and needs its internal RAM for DMA and DSP) can put
+     * the rings in PSRAM with use_psram: ~9 KB per 8-channel stream. */
+    uint32_t caps = use_psram ? (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : MALLOC_CAP_INTERNAL;
     stream->ring.data = heap_caps_malloc(buf_size, caps);
+    if (!stream->ring.data && use_psram) {
+        stream->ring.data = heap_caps_malloc(buf_size, MALLOC_CAP_INTERNAL);
+    }
     if (!stream->ring.data) {
         ESP_LOGE(TAG, "Failed to allocate ring buffer (%lu bytes)", (unsigned long)buf_size);
         return ESP_ERR_NO_MEM;
