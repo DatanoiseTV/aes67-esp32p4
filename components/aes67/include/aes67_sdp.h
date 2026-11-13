@@ -62,7 +62,7 @@ typedef struct {
     uint32_t mediaclk_offset;
 
     /* Stream direction for SDP attribute (a=sendonly / a=recvonly) */
-    bool is_source;             /* true = sendonly, false = recvonly */
+    bool is_source;             /* written as a=recvonly either way, like Dante and Merging */
 } aes67_sdp_t;
 
 /**
