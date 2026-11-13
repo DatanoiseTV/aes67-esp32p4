@@ -180,6 +180,17 @@ menu "PTP Daemon Configuration"
                     time is reset with settimeofday() instead of changing the rate with
                     adjtime().
 
+            config NETUTILS_PTPD_SYNC_WINDOW
+                int "PTP client Sync selection window (lucky-packet filter)"
+                range 1 16
+                default 4
+                help
+                    The clock servo runs once per this many Sync messages, on the
+                    least delayed one. This rejects the queuing delay a Sync picks
+                    up behind other traffic in a switch that is not PTP-aware.
+                    Offsets above 1 ms are acted on at once. 1 disables the filter:
+                    the servo then runs on every Sync.
+
         # Commented options not used by ESP_PTP
         #config NETUTILS_PTPD_MULTICAST_TIMEOUT_MS
         #    int "PTP client timeout to rejoin multicast group (ms)"
