@@ -53,6 +53,8 @@ struct aes67_node {
     aes67_audio_handle_t        audio;
     aes67_session_handle_t      session;
     TaskHandle_t                tx_task;
+    TaskHandle_t                refclk_task;           /* NULL when not running */
+    volatile bool               refclk_stop;
     StreamBufferHandle_t        external_playout_buf;  /* optional, see aes67_node_set_playout_buf */
     bool                        running;
 };
@@ -146,6 +148,26 @@ static void audio_frame_task(void *arg)
     }
 
     ESP_LOGI(TAG, "Audio frame task stopped");
+    vTaskDelete(NULL);
+}
+
+/*
+ * Keeps the reference clock in the announced SDPs current: once a second the
+ * session manager compares each source's ts-refclk with the PTP grandmaster
+ * and re-announces the source when it changed (or became known after start).
+ * Low priority, off the audio path. A notification ends the wait early so
+ * aes67_node_stop() does not have to sit out the full period.
+ */
+static void refclk_task(void *arg)
+{
+    aes67_node_handle_t node = (aes67_node_handle_t)arg;
+
+    while (!node->refclk_stop) {
+        aes67_session_refresh_refclk(node->session);
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+    }
+
+    node->refclk_task = NULL;
     vTaskDelete(NULL);
 }
 
@@ -523,6 +545,13 @@ esp_err_t aes67_node_start(aes67_node_handle_t handle)
         ESP_LOGW(TAG, "hw timer start failed, using I2S DMA callback");
     }
 
+    handle->refclk_stop = false;
+    if (xTaskCreate(refclk_task, "aes67_refclk", 6144, handle,
+                    tskIDLE_PRIORITY + 2, &handle->refclk_task) != pdPASS) {
+        handle->refclk_task = NULL;
+        ESP_LOGW(TAG, "failed to create refclk task: SDP keeps its start-up reference clock");
+    }
+
     ESP_LOGI(TAG, "node started");
 
     return ESP_OK;
@@ -539,6 +568,15 @@ esp_err_t aes67_node_stop(aes67_node_handle_t handle)
     }
 
     /* Tear down in reverse order */
+    if (handle->refclk_task) {
+        /* The task uses the session and SAP handles: wait until it is gone */
+        handle->refclk_stop = true;
+        xTaskNotifyGive(handle->refclk_task);
+        while (handle->refclk_task) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
     if (handle->config.mdns_enabled) {
         aes67_mdns_deinit();
     }
