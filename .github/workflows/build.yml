@@ -17,7 +17,7 @@ jobs:
       matrix:
         idf: [v5.5]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build example firmware
         uses: espressif/esp-idf-ci-action@v1
         with:
