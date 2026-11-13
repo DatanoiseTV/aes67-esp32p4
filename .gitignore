@@ -13,3 +13,6 @@ aes67-linux-daemon/
 
 # Component registry pack output
 dist/
+
+# generated at build time
+components/aes67/web/index.html.gz
