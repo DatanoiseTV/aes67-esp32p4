@@ -1069,6 +1069,16 @@ uint32_t aes67_rtp_sink_available(aes67_rtp_stream_handle_t stream)
     return frame_bytes > 0 ? bytes / frame_bytes : 0;
 }
 
+esp_err_t aes67_rtp_stream_resync_timestamp(aes67_rtp_stream_handle_t stream)
+{
+    struct aes67_rtp_stream *s = stream;
+    if (!s || s->direction != AES67_STREAM_SOURCE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s->timestamp_initialized = false;    /* next process_tx() takes its timestamp */
+    return ESP_OK;
+}
+
 esp_err_t aes67_rtp_engine_process_tx(aes67_rtp_engine_handle_t handle,
                                       uint32_t rtp_timestamp)
 {
