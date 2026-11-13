@@ -179,6 +179,10 @@ typedef struct {
     uint16_t jitter_buffer_ms;          /* Jitter buffer depth in ms */
     uint16_t ring_buffer_ms;            /* Audio ring buffer size in ms */
     bool use_psram;                     /* Allocate large buffers in PSRAM */
+    bool rtp_rings_psram;               /* Also put the per-stream RTP rings in PSRAM.
+                                         * Off by default: PSRAM reads cost throughput
+                                         * in the i2s_channel_write playout path. Saves
+                                         * ~9 KB of internal RAM per 8-channel stream. */
     bool sap_enabled;                   /* Enable SAP announcements */
     bool mdns_enabled;                  /* Enable mDNS advertisement */
 
@@ -221,6 +225,7 @@ typedef struct {
     .jitter_buffer_ms = CONFIG_AES67_JITTER_BUFFER_MS, \
     .ring_buffer_ms = CONFIG_AES67_AUDIO_RING_BUFFER_MS, \
     .use_psram = true, \
+    .rtp_rings_psram = false, \
     .sap_enabled = true, \
     .mdns_enabled = true, \
     .output_mode = AES67_OUTPUT_I2S, \

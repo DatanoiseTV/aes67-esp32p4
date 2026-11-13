@@ -148,7 +148,7 @@ All parameters are configurable via `idf.py menuconfig` under "AES67 RAVENNA Com
 - RTP port (default: 5004)
 - PTP domain (default: 0)
 - Jitter buffer depth (default: 4ms)
-- PSRAM usage for buffers
+- PSRAM usage for buffers (`use_psram`; `rtp_rings_psram` additionally moves the per-stream RTP rings, off by default)
 - I2S pin assignments
 - Task priorities
 

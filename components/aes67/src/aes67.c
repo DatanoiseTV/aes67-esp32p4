@@ -339,7 +339,7 @@ esp_err_t aes67_node_init(const aes67_config_t *config, aes67_node_handle_t *han
     }
 
     /* 2. RTP packet engine */
-    ret = aes67_rtp_engine_init(&node->config.net, node->config.use_psram, &node->rtp);
+    ret = aes67_rtp_engine_init(&node->config.net, node->config.rtp_rings_psram, &node->rtp);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "RTP engine init failed: %s", esp_err_to_name(ret));
         goto fail_rtp;
